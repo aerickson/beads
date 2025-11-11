@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,10 +158,78 @@ func TestValidatePreExport(t *testing.T) {
 		// Should fail validation (JSONL is newer, must import first)
 		err := validatePreExport(ctx, store, jsonlPath)
 		if err == nil {
-			t.Error("Expected error for JSONL newer than DB, got nil")
+																									t.Error("Expected error for JSONL newer than DB, got nil")
 		}
-		if err != nil && !strings.Contains(err.Error(), "JSONL is newer than database") {
+		if err != nil && !strings.Contains(err.Error(), "JSONL is newer") {
 			t.Errorf("Expected 'JSONL is newer' error, got: %v", err)
+		}
+	})
+
+	t.Run("JSONL newer but hash matches last_import_hash passes", func(t *testing.T) {
+		// Setup
+																							 tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0755); err != nil {
+																									 t.Fatalf("Failed to create .beads dir: %v", err)
+		}
+		dbPath := filepath.Join(beadsDir, "beads.db")
+		jsonlPath := filepath.Join(beadsDir, "beads.jsonl")
+
+		store := newTestStoreWithPrefix(t, dbPath, "bd")
+		issue := &types.Issue{ID: "bd-1", Title: "Test", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask, Description: "Test issue"}
+		if err := store.CreateIssue(context.Background(), issue, "test"); err != nil {
+			 t.Fatalf("Failed to create issue: %v", err)
+		}
+
+		content := `{"id":"bd-1","title":"Test","status":"open","priority":1}` + "\n"
+		if err := os.WriteFile(jsonlPath, []byte(content), 0600); err != nil {
+			 t.Fatalf("Failed to write JSONL: %v", err)
+		}
+		data, _ := os.ReadFile(jsonlPath)
+		h := sha256.New(); _, _ = h.Write(data)
+		hash := hex.EncodeToString(h.Sum(nil))
+		if err := store.SetMetadata(context.Background(), "last_import_hash", hash); err != nil {
+			 t.Fatalf("Failed to set last_import_hash: %v", err)
+		}
+		future := time.Now().Add(2 * time.Second)
+		if err := os.Chtimes(jsonlPath, future, future); err != nil {
+			 t.Fatalf("Failed to touch JSONL: %v", err)
+		}
+		if err := validatePreExport(context.Background(), store, jsonlPath); err != nil {
+			 t.Errorf("Expected no error with matching hash, got: %v", err)
+		}
+	})
+
+	t.Run("JSONL newer and hash differs fails", func(t *testing.T) {
+		 tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0755); err != nil {
+			 t.Fatalf("Failed to create .beads dir: %v", err)
+		}
+		dbPath := filepath.Join(beadsDir, "beads.db")
+		jsonlPath := filepath.Join(beadsDir, "beads.jsonl")
+		store := newTestStoreWithPrefix(t, dbPath, "bd")
+		issue := &types.Issue{ID: "bd-1", Title: "Test", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask, Description: "Test issue"}
+		if err := store.CreateIssue(context.Background(), issue, "test"); err != nil {
+			 t.Fatalf("Failed to create issue: %v", err)
+		}
+		content := `{"id":"bd-1","title":"Test","status":"open","priority":1}` + "\n"
+		if err := os.WriteFile(jsonlPath, []byte(content), 0600); err != nil {
+			 t.Fatalf("Failed to write JSONL: %v", err)
+		}
+		// Set mismatching hash
+		if err := store.SetMetadata(context.Background(), "last_import_hash", "deadbeef"); err != nil {
+			 t.Fatalf("Failed to set last_import_hash: %v", err)
+		}
+		future := time.Now().Add(2 * time.Second)
+		if err := os.Chtimes(jsonlPath, future, future); err != nil {
+			 t.Fatalf("Failed to touch JSONL: %v", err)
+		}
+		err := validatePreExport(context.Background(), store, jsonlPath)
+		if err == nil {
+			 t.Error("Expected error when hash differs and JSONL newer, got nil")
+		} else if !strings.Contains(err.Error(), "JSONL is newer") {
+			 t.Errorf("Expected 'JSONL is newer' error, got: %v", err)
 		}
 	})
 }

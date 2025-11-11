@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
@@ -15,15 +17,26 @@ import (
 // validatePreExport performs integrity checks before exporting database to JSONL.
 // Returns error if critical issues found that would cause data loss.
 func validatePreExport(ctx context.Context, store storage.Storage, jsonlPath string) error {
-	// Check if JSONL is newer than database - if so, must import first
+	// Improved staleness detection: if JSONL newer than DB but content hash matches
+	// last_import_hash metadata, allow export (mtime-only bump such as checkout, touch, etc.)
 	jsonlInfo, jsonlStatErr := os.Stat(jsonlPath)
 	if jsonlStatErr == nil {
 		beadsDir := filepath.Dir(jsonlPath)
 		dbPath := filepath.Join(beadsDir, "beads.db")
 		dbInfo, dbStatErr := os.Stat(dbPath)
-		if dbStatErr == nil {
-			// If JSONL is newer, refuse export - caller must import first
-			if jsonlInfo.ModTime().After(dbInfo.ModTime()) {
+		if dbStatErr == nil && jsonlInfo.ModTime().After(dbInfo.ModTime()) {
+			// Compute JSONL content hash; if unreadable, conservatively refuse export.
+			data, readErr := os.ReadFile(jsonlPath)
+			if readErr != nil {
+				return fmt.Errorf("refusing to export: JSONL is newer than database (import first to avoid data loss)")
+			}
+			h := sha256.New()
+			_, _ = h.Write(data)
+			currentHash := hex.EncodeToString(h.Sum(nil))
+			lastHash, _ := store.GetMetadata(ctx, "last_import_hash")
+			if lastHash != "" && lastHash == currentHash {
+				// Safe: same content already imported; proceed.
+			} else {
 				return fmt.Errorf("refusing to export: JSONL is newer than database (import first to avoid data loss)")
 			}
 		}

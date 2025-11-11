@@ -122,15 +122,29 @@ Use --merge to merge the sync branch back to main branch.`,
 			os.Exit(1)
 		}
 
-		// Step 1: Export pending changes
+		// Step 1: Export pending changes (with auto-import fallback if JSONL newer)
 		if dryRun {
 			fmt.Println("→ [DRY RUN] Would export pending changes to JSONL")
 		} else {
 			// Pre-export integrity checks
 			if err := ensureStoreActive(); err == nil && store != nil {
 				if err := validatePreExport(ctx, store, jsonlPath); err != nil {
-					fmt.Fprintf(os.Stderr, "Pre-export validation failed: %v\n", err)
-					os.Exit(1)
+					// Auto-import fallback if JSONL newer than DB
+					if strings.Contains(err.Error(), "JSONL is newer") {
+						fmt.Println("→ JSONL newer than DB; importing before export...")
+						if importErr := importFromJSONL(ctx, jsonlPath, false); importErr != nil { // rename not needed for fallback
+							fmt.Fprintf(os.Stderr, "Auto-import failed: %v\n", importErr)
+							os.Exit(1)
+						}
+						// Re-validate after import; should now pass
+						if reErr := validatePreExport(ctx, store, jsonlPath); reErr != nil {
+							fmt.Fprintf(os.Stderr, "Pre-export re-validation failed: %v\n", reErr)
+							os.Exit(1)
+						}
+					} else {
+						fmt.Fprintf(os.Stderr, "Pre-export validation failed: %v\n", err)
+						os.Exit(1)
+					}
 				}
 				if err := checkDuplicateIDs(ctx, store); err != nil {
 					fmt.Fprintf(os.Stderr, "Database corruption detected: %v\n", err)
