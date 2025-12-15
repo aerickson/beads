@@ -511,6 +511,9 @@ Use --merge to merge the sync branch back to main branch.`,
 					}
 					// JSONL is already copied to main repo by PullFromSyncBranch
 				} else {
+					// Check merge driver configuration before pulling
+					checkMergeDriverConfig()
+
 					// When sync.branch == current branch, we can't use worktree.
 					// Instead, fetch and checkout only .beads/ to avoid conflicts with unstaged files.
 					// This is safer than git pull which would fail if there are any unstaged changes.
