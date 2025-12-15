@@ -511,11 +511,11 @@ Use --merge to merge the sync branch back to main branch.`,
 					}
 					// JSONL is already copied to main repo by PullFromSyncBranch
 				} else {
-					// Check merge driver configuration before pulling
-					checkMergeDriverConfig()
-
-					fmt.Println("→ Pulling from remote...")
-					err := gitPull(ctx)
+					// When sync.branch == current branch, we can't use worktree.
+					// Instead, fetch and checkout only .beads/ to avoid conflicts with unstaged files.
+					// This is safer than git pull which would fail if there are any unstaged changes.
+					fmt.Println("→ Pulling .beads/ from remote...")
+					err := gitPullBeadsOnly(ctx)
 					if err != nil {
 						// Check if it's a rebase conflict on beads.jsonl that we can auto-resolve
 						if isInRebase() && hasJSONLConflict() {
@@ -1127,6 +1127,49 @@ func gitPull(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("git pull failed: %w\n%s", err, output)
 	}
+	return nil
+}
+
+// gitPullBeadsOnly fetches from remote and updates only .beads/ directory.
+// This is used when sync.branch == current branch to avoid conflicts with unstaged files.
+// Unlike git pull, this works even when there are unstaged changes in the working directory.
+func gitPullBeadsOnly(ctx context.Context) error {
+	// Check if any remote exists
+	if !hasGitRemote(ctx) {
+		return nil // Gracefully skip - local-only mode
+	}
+
+	// Get current branch name
+	branchCmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "HEAD")
+	branchOutput, err := branchCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get current branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(branchOutput))
+
+	// Get remote name for current branch (usually "origin")
+	remoteCmd := exec.CommandContext(ctx, "git", "config", "--get", fmt.Sprintf("branch.%s.remote", branch))
+	remoteOutput, err := remoteCmd.Output()
+	if err != nil {
+		// If no remote configured, default to "origin"
+		remoteOutput = []byte("origin\n")
+	}
+	remote := strings.TrimSpace(string(remoteOutput))
+
+	// Fetch from remote
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", remote, branch)
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch failed: %w\n%s", err, output)
+	}
+
+	// Checkout only .beads/ from remote branch
+	// This updates .beads/ without touching other files
+	checkoutCmd := exec.CommandContext(ctx, "git", "checkout", fmt.Sprintf("%s/%s", remote, branch), "--", ".beads/")
+	output, err := checkoutCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git checkout .beads/ failed: %w\n%s", err, output)
+	}
+
 	return nil
 }
 
